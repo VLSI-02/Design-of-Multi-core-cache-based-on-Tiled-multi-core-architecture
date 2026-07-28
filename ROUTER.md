@@ -1,5 +1,11 @@
 # Router Design for Bidirectional Ring Network-on-Chip (NoC)
+## Design
 
+**Megha R**
+
+M.Sc. Applied Physics (VLSI Specialization)
+
+**Contribution:** RTL Design and Verification of the Router module for the Bidirectional Ring Network-on-Chip (NoC).
 ## Overview
 
 This repository contains the RTL implementation of the Router used in a Bidirectional Ring Network-on-Chip (NoC). The router is responsible for receiving flits from neighboring routers or the local Network Interface Controller (NIC), determining the appropriate forwarding direction, resolving output contention, and transmitting data efficiently across the network.
