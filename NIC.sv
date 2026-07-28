@@ -1,4 +1,5 @@
 ### TOP MODULE
+
 module nic_top(
     input logic clk,
     input logic rst,
@@ -84,6 +85,7 @@ packet_decoder decoder
 );
 endmodule
 ### FIFO
+
 module request_fifo(
     input  logic clk,
     input  logic rst,
@@ -194,6 +196,7 @@ end
 endmodule
 
 ### TX CONTROLLER
+
 module tx_controller(
 input logic clk,
 input logic rst,
@@ -264,6 +267,7 @@ assign tx_ready = (state == IDLE);
 endmodule
 
 ### RX CONTROLLER
+
 module rx_controller(
     input logic clk,
     input logic rst,
@@ -292,6 +296,7 @@ end
 endmodule
 
 ### PACKET DECODER
+
 module packet_decoder(
     input logic clk,
     input logic rst,
@@ -322,6 +327,7 @@ end
 endmodule
 
 ### TB
+
 module nic_top_tb;
 logic clk;
 logic rst;
