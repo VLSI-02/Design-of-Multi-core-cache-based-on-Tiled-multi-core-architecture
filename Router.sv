@@ -1,4 +1,4 @@
-
+### FIFO
 module fifo_in (
 input logic clk,
 input logic rst,
@@ -39,7 +39,7 @@ end
 assign full = (cnt == 16);
 assign empty = (cnt == 0);
 endmodule
-
+### FLIT DECODER
 module flit_dec (
 input logic [7:0] flit,
 output logic [1:0] type,
@@ -48,7 +48,7 @@ output logic [1:0] dest
 assign typ = flit[7:6];
 assign dest = flit[5:4];
 endmodule
-
+### ROUTE COMPUTATION
 module route_comp (
 input logic [1:0] cur,
 input logic [1:0] dest,
@@ -77,6 +77,7 @@ always_comb begin
 end
 endmodule
 
+### SWITCH CONTROL
 module sw_ctrl (
 input logic [1:0] l_rt,
 input logic [1:0] c_rt,
@@ -114,6 +115,7 @@ always_comb begin
 end
 endmodule
 
+### CROSSBAR
 module xbar (
     input logic [7:0] l_in,
     input logic [7:0] c_in,
@@ -147,6 +149,7 @@ always_comb begin
 end
 endmodule
 
+### ROUTER TOP
 module router_top (
 input logic clk,
 input logic rst,
@@ -287,4 +290,193 @@ assign dbg_c_cw = c_cw;
 assign dbg_c_ccw = c_ccw;
 assign dbg_cc_cw = cc_cw;
 assign dbg_cc_ccw = cc_ccw;
+endmodule
+
+### TB
+module tb_router;
+logic clk;
+logic rst;
+logic [1:0] rid;
+logic [7:0] l_in;
+logic l_wr;
+logic [7:0] c_in;
+logic c_wr;
+logic [7:0] cc_in;
+logic cc_wr;
+logic [7:0] l_out;
+logic [7:0] c_out;
+logic [7:0] cc_out;
+logic [1:0] dbg_l_dest;
+logic [1:0] dbg_c_dest;
+logic [1:0] dbg_cc_dest;
+logic [1:0] dbg_l_rt;
+logic [1:0] dbg_c_rt;
+logic [1:0] dbg_cc_rt;
+logic [2:0] dbg_l_cw;
+logic [2:0] dbg_l_ccw;
+logic [2:0] dbg_c_cw;
+logic [2:0] dbg_c_ccw;
+logic [2:0] dbg_cc_cw;
+logic [2:0] dbg_cc_ccw;
+router_top dut (
+    .clk(clk),
+    .rst(rst),
+   .rid(rid),
+   .l_in(l_in),
+   .l_wr(l_wr),
+   .c_in(c_in),
+   .c_wr(c_wr),
+   .cc_in(cc_in),
+   .cc_wr(cc_wr),
+   .l_out(l_out),
+   .c_out(c_out),
+   .cc_out(cc_out),
+ .dbg_l_dest(dbg_l_dest),
+ .dbg_c_dest(dbg_c_dest),
+ .dbg_cc_dest(dbg_cc_dest),
+ .dbg_l_rt(dbg_l_rt),
+ .dbg_c_rt(dbg_c_rt),
+ .dbg_cc_rt(dbg_cc_rt),
+ .dbg_l_cw(dbg_l_cw),
+ .dbg_l_ccw(dbg_l_ccw),
+ .dbg_c_cw(dbg_c_cw),
+  .dbg_c_ccw(dbg_c_ccw),
+  .dbg_cc_cw(dbg_cc_cw),
+ .dbg_cc_ccw(dbg_cc_ccw)
+);
+always #5 clk = ~clk;
+task send_l(input logic [7:0] data);
+begin
+  @(posedge clk);
+  l_in = data;
+  l_wr = 1;
+  @(posedge clk);
+  l_wr = 0;
+end
+endtask
+task send_c(input logic [7:0] data);
+begin
+    @(posedge clk);
+    c_in = data;
+    c_wr = 1;
+    @(posedge clk);
+    c_wr = 0;
+end
+endtask
+task send_cc(input logic [7:0] data);
+begin
+ @(posedge clk);
+ cc_in = data;
+ cc_wr = 1;
+ @(posedge clk);
+ cc_wr = 0;
+end
+endtask
+task show_l;
+begin
+    $display("CURRENT ROUTER = %0d", rid);
+    $display("DESTINATION = %0d", dbg_l_dest);
+    $display("CW DISTANCE = %0d", dbg_l_cw);
+    $display("CCW DISTANCE = %0d", dbg_l_ccw);
+    case (dbg_l_rt)
+     2'b00: $display("PATH = LOCAL");
+      2'b01: $display("PATH = CW");
+      2'b10: $display("PATH = CCW");
+    endcase
+end
+endtask
+task show_c;
+begin
+ $display("CURRENT ROUTER = %0d", rid);
+ $display("DESTINATION = %0d", dbg_c_dest);
+ $display("CW DISTANCE = %0d", dbg_c_cw);
+ $display("CCW DISTANCE = %0d", dbg_c_ccw);
+ case (dbg_c_rt)
+  2'b00: $display("PATH = LOCAL");
+  2'b01: $display("PATH = CW");
+   2'b10: $display("PATH = CCW");
+ endcase
+end
+endtask
+task show_cc;
+begin
+  $display("CURRENT ROUTER = %0d", rid);
+  $display("DESTINATION = %0d", dbg_cc_dest);
+ $display("CW DISTANCE= %0d", dbg_cc_cw);
+  $display("CCW DISTANCE = %0d", dbg_cc_ccw);
+ case (dbg_cc_rt)
+   2'b00: $display("PATH = LOCAL");
+   2'b01: $display("PATH = CW");
+   2'b10: $display("PATH = CCW");
+  endcase
+end
+endtask
+initial begin
+clk = 0;
+rst = 1;
+ rid = 2'b00;
+ l_in = 0;
+ c_in = 0;
+ cc_in = 0;
+ l_wr = 0;
+ c_wr = 0;
+ cc_wr = 0;
+ #20;
+ rst = 0;
+$display("TEST 1 : LOCAL -> LOCAL");
+send_l(8'b00_00_01_11);
+#20;
+show_l();
+$display("LOCAL OUT = %h", l_out);#20;
+$display("TEST 2 : LOCAL -> CW");
+ send_l(8'b00_01_01_10);
+ #20;
+ show_l();
+ $display("CW OUT = %h", c_out);
+ #20;
+ $display("TEST 3 : LOCAL -> CCW");
+ send_l(8'b00_11_01_01);
+ #20;
+ show_l();
+ $display("CCW OUT = %h", cc_out);
+ #20;
+ $display("TEST 4 : CW -> LOCAL");
+ send_c(8'b00_00_10_11);
+ #20;
+ show_c();
+ $display("LOCAL OUT = %h", l_out);
+ #20;
+ $display("TEST 5 : CCW -> LOCAL");
+ send_cc(8'b00_00_11_10);
+ #20;
+ show_cc();
+ $display("LOCAL OUT = %h", l_out);
+ #20;
+ $display("TEST 6 : R0 -> R2");
+ send_l(8'b00_10_01_01);
+  #20;
+  show_l();
+  $display("CW OUT = %h", c_out);
+  #20;
+  $display("TEST 7 : MULTIPLE INPUTS");
+  fork
+ send_l(8'b00_01_00_01);
+ send_c(8'b00_01_00_10);
+ send_cc(8'b00_10_00_11);
+  join
+ #30;
+$display("LOCAL");
+ show_l();
+$display("CW");
+show_c();
+$display("CCW");
+show_cc();
+$display("LOCAL OUT = %h", l_out);
+$display("CW OUT    = %h", c_out);
+$display("CCW OUT   = %h", cc_out);
+#30;
+$display("ROUTER TEST COMPLETED");
+#20;
+$finish;
+end
 endmodule
