@@ -1,25 +1,56 @@
 package L1_cache_mem;
-typedef enum logic [1:0]{
-    INVALID, EXCLUSIVE , SHARED , MODIFIED
+
+typedef enum logic [3:0]{
+    INVALID,IS_D,IM_D,SHARED,SM_D,EXCLUSIVE,EI_A,MODIFIED,MI_A
 } MESI_STATES_t;
+
 typedef struct packed{
     logic valid;
-    logic dirty;
-    logic [1:0]set_index;
     MESI_STATES_t C_tag;
     logic [3:0]tag;
     logic [7:0]data;
 }l1_cache_line_t;
+
 typedef enum logic [2:0] {
-    IDLE,COMPARE,DONE,SNOOP,WRITEBACK
+    IDLE,COMPARE,ALLOCATE,DONE,SNOOP,WRITEBACK
 } C_STATES_t;
+
+typedef enum logic [2:0] {
+    MSG_GETS,
+    MSG_GETM,
+    MSG_PUTE,
+    MSG_PUTM,
+    MSG_UNBLOCK,
+    MSG_INVACK,
+    MSG_DATAFWD,
+    MSG_ACK
+} l1_msg_out_t;
+
+typedef enum logic [2:0] {
+    MSG_FWD_GETS,
+    MSG_FWD_GETM,
+    MSG_INV,
+    MSG_DATA,
+    MSG_NONE
+} l1_msg_in_t;
+
+
+typedef enum logic [2:0] { ACTION_HIT, ACTION_STALL_TRANSIENT, ACTION_MISS, ACTION_UPGRADE ,ACTION_ACK_VACUOUS,ACTION_INVALIDATE,ACTION_FORWARD} l1_action_t;
+
+typedef struct packed {
+    l1_action_t   action;
+     l1_msg_out_t  msg_to_send;
+     l1_msg_out_t msg_to_dir;
+    MESI_STATES_t next_state;
+} l1_decision_t;
+
 endpackage
 
 import L1_cache_mem::*;
 
 
 module cache_L1_top ();
-cache c1_inf(); 
+cache_v1 c1_inf(); 
 l1_cache_line_t cache_mem_out[0:3][0:1];
 cache_controller c1(.c1_inf(c1_inf.cache_controller_mb));
 cache_storage c2(.c1_inf(c1_inf.cache_storage_mb));
@@ -32,98 +63,73 @@ end
 initial begin
 
   c1_inf.rst = 1'b1;
-  c1_inf.snoop_read  = 1'b0;
-  c1_inf.snoop_write = 1'b0;
   #20;
   c1_inf.rst = 1'b0;
 
   // load miss: set 0, tag 1 -> EXCLUSIVE, data 100
   c1_inf.inst = 10'b0100010010;
-  #20;
-  c1_inf.data_ready      = 1'b1;
-  c1_inf.shared          = 1'b0;
-  c1_inf.Data_fetch      = 8'd100;
-  c1_inf.Data_addr_fetch = 10'b0100010010;
-  #100;
-  c1_inf.data_ready = 1'b0;
   #40;
+  c1_inf.is_exclusive_in   = 1'b0;
+  c1_inf.msg_req_in = MSG_DATA;
+  c1_inf.req_data_in    = 8'd100;
+  c1_inf.req_addr_in = 10'b0100010010;
+  #100;
 c1_inf.inst = 10'b0000000000; 
 #20;
+$display("start of second command");
   // load miss: set 0, tag 2 -> SHARED, data 200
-  c1_inf.inst = 10'b0100100011;
-  #20;
-  c1_inf.data_ready      = 1'b1;
-  c1_inf.shared          = 1'b1;
-  c1_inf.Data_fetch      = 8'd200;
-  c1_inf.Data_addr_fetch = 10'b0100100011;
-  #100;
-  c1_inf.data_ready = 1'b0;
+  c1_inf.inst = 10'b0101111000;
   #40;
+   c1_inf.is_exclusive_in   = 1'b1;
+  c1_inf.msg_req_in = MSG_DATA;
+  c1_inf.req_data_in    = 8'd240;
+  c1_inf.req_addr_in = 10'b0101111000;
+  #100;
+  #100;
+
 c1_inf.inst = 10'b0000000000; 
 #20;
-  // store miss: set 0, tag 4 (set is full -> LRU eviction path)
+  // store miss: set 0, tag 4 
   c1_inf.inst    = 10'b1001000000;
-  c1_inf.in_data = 8'd2;
+  c1_inf.in_data = 8'd12;
   #20;
-  c1_inf.data_ready      = 1'b1;
-  c1_inf.shared          = 1'b0;
-  c1_inf.Data_fetch      = 8'd20;
-  c1_inf.Data_addr_fetch = 10'b1001000000;
-  #40;
-  c1_inf.data_ready = 1'b0;
-  #60;
-  c1_inf.inst = 10'b0101000000;
+  c1_inf.msg_req_in = MSG_DATA;
+  c1_inf.req_data_in    = 8'd40;
+  c1_inf.req_addr_in = 10'b1001000000;
   #100;
-  /*
+
+  c1_inf.inst = 10'b0000000000;
+  #20;
+
+
+c1_inf.inst    = 10'b1010000000;
+c1_inf.in_data = 8'd64;
+#20;
+c1_inf.inst = 10'b0000000000;
+
+#20;   
+
+c1_inf.req_data_in = 8'd77;
+c1_inf.req_addr_in = 10'b1010000000;  
+#80; 
+   c1_inf.msg_req_in = MSG_NONE;
+  c1_inf.req_data_in    = 8'd40;
+  c1_inf.req_addr_in = 10'b1001000000;
  #20;
-  // snoop read, non-matching address
-  c1_inf.snoop_addr = 8'b0011_0000;
-  c1_inf.snoop_read = 1'b1;
-  #20;
-  c1_inf.snoop_read = 1'b0;
-  #60;
-*/
-  /* c1_inf.inst = 10'b0000000000;
-  // snoop read, matching tag 1 (EXCLUSIVE -> SHARED)
-  c1_inf.snoop_addr = 8'b0100_0000;
-  c1_inf.snoop_read = 1'b1;
-    #20;
-  c1_inf.mem_ready = 1'b1;
-  #100;
-  c1_inf.snoop_read = 1'b0;
-    c1_inf.mem_ready = 1'b0;
-
-  #100;
-  c1_inf.snoop_addr = 8'bx;
-  #100;
-
-  c1_inf.snoop_write = 1'b1;
-  c1_inf.snoop_addr = 8'b00100000;
-  #40;
-  c1_inf.snoop_write = 1'b0;
-  #100;
-
-/*
-  // snoop read, matching tag 4 (MODIFIED -> writeback -> SHARED)
-  c1_inf.snoop_addr = 8'b0100_0000;
-  c1_inf.snoop_read = 1'b1;
-  #20;
-  c1_inf.snoop_read = 1'b0;
-  #40;
-  c1_inf.mem_ready = 1'b1;
-  #40;
-  c1_inf.mem_ready = 1'b0;
-  #80;
+     c1_inf.msg_req_in = MSG_FWD_GETS;
+     c1_inf.peer_id_in = 2'b11;
+  c1_inf.req_addr_in = 8'b01000000;
 #100;
-c1_inf.data_ready = 1'b0;
-c1_inf.inst = 10'b0000000000; 
-#40;*/
+     c1_inf.msg_req_in = MSG_NONE;
+     #100;
+
+ 
   $finish;
 
 end
 initial
 begin
-  $monitor("time = %t,clk = %b, rst = %b,snoop_addr = %b,inst = %b,Data_out = %b,cache_mem_out = %p,data ready = %b,Data_fetch = %d,Data_fetch_addr = %b,update_line = %b,C_PS = %b,C_NS = %b,stall = %b,done = %b,write_back = %b,mem_wr_req = %b,mem_ready = %b, mem_data = %d, mem_addr = %b,lru_way = %b,snoop_ack = %b,write_en = %b,victim_way = %b,snoop_read = %b,snoop_write = %b,way_sel = %b,fill_pending = %b",
-            $time , c1_inf.clk,c1_inf.rst,c1_inf.snoop_addr,c1_inf.inst,c1_inf.Data_out,c1_inf.cache_mem_out,c1_inf.data_ready,c1_inf.Data_fetch,c1_inf.Data_addr_fetch,c1_inf.update_line,cache_L1_top.c1.C_PS,cache_L1_top.c1.C_NS,cache_L1_top.c1.stall,cache_L1_top.c1.done,cache_L1_top.c1.write_back,c1_inf.mem_wr_req,c1_inf.mem_ready,c1_inf.mem_data,c1_inf.mem_addr,c1_inf.lru_way,c1_inf.snoop_ack,c1_inf.write_en,cache_L1_top.c1.victim_way,c1_inf.snoop_read,c1_inf.snoop_write,c1_inf.way_sel,cache_L1_top.c1.fill_pending);
+  $monitor("time = %t,clk = %b, rst = %b,inst = %b,Data_out = %d,cache_mem_out = %p,update_line = %b,C_PS = %d,C_NS = %d,stall = %b,done = %b,write_back = %b,lru_way = %b,write_en = %b,way_sel = %b,fill_pending = %b,msg_req_in = %d,req_addr_in = %b, req_data_in = %d,mag_req_out = %d,req_addr_out = %b,req_data_out = %d,pending_state = %d,peer_id_out = %d",
+            $time , c1_inf.clk,c1_inf.rst,c1_inf.inst,c1_inf.Data_out,c1_inf.cache_mem_out,c1_inf.update_line,cache_L1_top.c1.C_PS,cache_L1_top.c1.C_NS,cache_L1_top.c1.stall,cache_L1_top.c1.done,cache_L1_top.c1.write_back,c1_inf.lru_way,c1_inf.write_en,c1_inf.way_sel,cache_L1_top.c1.fill_pending,c1_inf.msg_req_in,c1_inf.req_addr_in,c1_inf.req_data_in,c1_inf.msg_req_out,c1_inf.req_addr_out,c1_inf.req_data_out,cache_L1_top.c1.pending_state,c1_inf.peer_id_out);
 end
 endmodule
