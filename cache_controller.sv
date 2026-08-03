@@ -1,1483 +1,461 @@
 import L1_cache_mem::*;
 
-module cache_controller(cache.cache_controller_mb c1_inf);
-//cache c1_inf();
+module cache_controller(cache_v1.cache_controller_mb c1_inf);
+
 l1_cache_line_t cache_mem_out[0:3][0:1];
-C_STATES_t C_NS,C_PS;
+C_STATES_t C_NS, C_PS;
 logic done = 1'b0;
-//MESI_STATES_t current_mesi_state = INVALID ;
-//MESI_STATES_t next_mesi_state;
 logic snoop_done = 1'b0;
-logic stall  = 1'b0;
+logic stall = 1'b0;
 logic write_back = 1'b0;
-logic snoop_wb_read = 1'b0;
-logic snoop_wb_write = 1'b0;
 logic hit = 1'b0, miss = 1'b0;
-logic victim_way = 'x;
 logic fill_pending = 1'b0;
+
+MESI_STATES_t pending_state;
+logic [1:0] pending_set;
+logic       pending_way;
+logic [1:0] pending_op;
+logic [7:0] pending_addr;
+
+logic [1:0] req_set;
+logic [3:0] req_tag;
+logic       way0_match,way1_match;
+logic       req_hit;
+logic       req_hit_way;
+
+assign req_set     = c1_inf.inst[3:2];
+assign req_tag      = c1_inf.inst[7:4];
+assign way0_match   = c1_inf.cache_mem_out[req_set][0].valid && (c1_inf.cache_mem_out[req_set][0].tag == req_tag);
+assign way1_match   = c1_inf.cache_mem_out[req_set][1].valid && (c1_inf.cache_mem_out[req_set][1].tag == req_tag);
+assign req_hit      = way0_match || way1_match;
+assign req_hit_way  = way1_match;
+
+
+logic [1:0] snoop_set;
+logic [3:0] snoop_tag;
+logic       snoop_way0_match, snoop_way1_match;
+logic       snoop_hit;
+logic       snoop_hit_way;
+
+assign snoop_set        = c1_inf.req_addr_in[3:2];
+assign snoop_tag         = c1_inf.req_addr_in[7:4];
+assign snoop_way0_match  = c1_inf.cache_mem_out[snoop_set][0].valid && (c1_inf.cache_mem_out[snoop_set][0].tag == snoop_tag);
+assign snoop_way1_match  = c1_inf.cache_mem_out[snoop_set][1].valid && (c1_inf.cache_mem_out[snoop_set][1].tag == snoop_tag);
+assign snoop_hit         = snoop_way0_match || snoop_way1_match;
+assign snoop_hit_way     = snoop_way1_match;
+l1_decision_t     dec;
+
 always_ff @(posedge c1_inf.clk or posedge c1_inf.rst)
 begin
   if(c1_inf.rst)
     begin
+      hit           <= 1'b0;
+      miss          <= 1'b0;
+      stall         <= 1'b0;
+      write_back    <= 1'b0;
+      done          <= 1'b0;
+      fill_pending  <= 1'b0;
+      pending_state <= INVALID;
+      pending_set   <= '0;
+      pending_way   <= 1'b0;
+      pending_op    <= '0;
+      pending_addr  <= '0;
       C_PS <= IDLE;
     end
-  else 
+  else
     begin
       C_PS <= C_NS;
     end
 end
+
 always_comb
 begin
- case(C_PS)
-  IDLE: begin
-          if(c1_inf.rst)
-            begin
-              C_NS <= IDLE;
-            end
-          else if (c1_inf.snoop_read == 1'b1 || c1_inf.snoop_write == 1'b1) 
-            begin
-              C_NS <= SNOOP;
-            end
-          else if (!done && !stall)
-            begin
-              C_NS <= COMPARE;
-            end
-          else if (done)
-            begin
-              C_NS <= DONE;
-            end
-           else if (done && stall)
-            begin
-              C_NS <= DONE;
-            end
-           else
-            begin
-              C_NS <= IDLE;
-            end
-        end
- COMPARE : begin
-              if(c1_inf.rst)
-                   C_NS <= IDLE;
-                else if (write_back)
-                    C_NS <= WRITEBACK;
-                 else if (stall)
-                   C_NS <= DONE;
-                 else if (done)
-                    C_NS <= DONE;
-                 else if (c1_inf.snoop_read == 1'b1 || c1_inf.snoop_write == 1'b1)
-                    C_NS <= SNOOP;
-                 else
-                    C_NS <= COMPARE; 
-                 end
- DONE : begin
-           if(c1_inf.rst)
-                 begin
-                   C_NS <= IDLE;
-                 end
-            else if (c1_inf.data_ready)
-                 C_NS <= COMPARE;
-            else if (c1_inf.snoop_read == 1'b1 || c1_inf.snoop_write == 1'b1)
-                    C_NS <= SNOOP;
-              else if (!done)
-                begin
-                  C_NS <= COMPARE;
-                end
-               else if(done && stall)
-                  C_NS <= DONE;
-               else 
-                  C_NS <= DONE;
-        end
-  SNOOP : begin
+  case(C_PS)
+   IDLE : begin
             if(c1_inf.rst)
               begin
-                C_NS <= IDLE;  
+                C_NS <= IDLE;
               end
-            else if (write_back)
-              begin
-                C_NS <= WRITEBACK;
-              end
-            else if (snoop_done == 1'b1)
-              begin
-               C_NS <= DONE;
-              end
-            else 
+            else if(c1_inf.msg_req_in == MSG_FWD_GETS || c1_inf.msg_req_in == MSG_FWD_GETM || c1_inf.msg_req_in == MSG_INV)
               begin
                 C_NS <= SNOOP;
               end
+            else if (fill_pending == 1'b1)
+              begin
+                C_NS <= ALLOCATE;
+              end
+            else if (c1_inf.inst[9:8] == 2'b00 || c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10|| c1_inf.inst[9:8] == 2'b10)
+              begin
+                C_NS <= COMPARE;
+              end
+            else
+              begin
+                C_NS <= IDLE;
+              end
           end
- WRITEBACK:begin
-              if(c1_inf.rst)
-                begin
-                  C_NS <= IDLE;
-                end
-              else if (done)
-                begin
-                  C_NS <= DONE;
-                end
-              else 
-                begin
-                  C_NS <= WRITEBACK;
-                end
-            end
- default : begin
-             C_NS <= IDLE; 
-           end
- endcase
+   COMPARE : begin
+               if(c1_inf.rst)
+                 begin
+                   C_NS <= IDLE;
+                 end
+                else if(fill_pending == 1'b1)
+                 begin
+                   C_NS <= ALLOCATE;
+                 end
+                else if (write_back)
+                 begin
+                   C_NS <= WRITEBACK;
+                 end
+                else if (done)
+                 begin
+                   C_NS <= DONE;
+                 end
+                else
+                 begin
+                   C_NS <= COMPARE;
+                 end
+             end
+   ALLOCATE: begin
+               if(c1_inf.rst)
+                 begin
+                   C_NS <= IDLE;
+                 end
+               else if (done)
+                 begin
+                   C_NS <= DONE;
+                 end
+               else
+                 begin
+                   C_NS <= ALLOCATE;
+                 end
+             end
+   DONE : begin
+             if(c1_inf.rst)
+               begin
+                 C_NS <= IDLE;
+               end
+             else if (c1_inf.msg_req_in == MSG_FWD_GETS || c1_inf.msg_req_in == MSG_FWD_GETM || c1_inf.msg_req_in == MSG_INV)
+               begin
+                 C_NS <= SNOOP;
+               end
+             else if(fill_pending == 1'b1 && c1_inf.msg_req_in == MSG_DATA)
+               begin
+                 C_NS <= ALLOCATE;
+               end
+             else if (c1_inf.inst[9:8] == 2'b00 || c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10|| c1_inf.inst[9:8] == 2'b10)
+               begin
+                 C_NS <= COMPARE;
+               end
+             else
+               begin
+                 C_NS <= DONE;
+               end
+          end
+  SNOOP : begin
+            if(c1_inf.rst)
+              begin
+                C_NS <= IDLE;
+              end
+            else if (fill_pending == 1'b1)
+              begin
+                C_NS <= ALLOCATE;
+              end
+            else if(done)
+              begin
+                C_NS <= DONE;
+              end
+          end
+  WRITEBACK: begin
+               if(c1_inf.rst)
+                 begin
+                   C_NS <= IDLE;
+                 end
+               else if(done)
+                 begin
+                   C_NS <= DONE;
+                 end
+               else
+                 begin
+                   C_NS <= WRITEBACK;
+                 end
+             end
+   default : begin
+               C_NS <= IDLE;
+             end
+  endcase
+end
+always_comb
+begin
+   cache_mem_out <= c1_inf.cache_mem_out;
 end
 always_ff @(posedge c1_inf.clk)
 begin
-  cache_mem_out = c1_inf.cache_mem_out; 
+ 
   case(C_PS)
    IDLE : begin
-            cache_mem_out <= cache_mem_out;
+            done <= 1'b0;
           end
    COMPARE : begin
                hit        <= 1'b0;
                miss       <= 1'b0;
                stall      <= 1'b0;
                write_back <= 1'b0; 
-            done       <= 1'b0;
-             if(stall == 1'b0)
-               begin
-                if(c1_inf.inst[9:8] == 2'b00)
-                 begin
-                  c1_inf.write_en <= 1'b0;
-                 end
-                else if (c1_inf.inst[9:8] == 2'b01) // read operation
-                 begin
-                  if(c1_inf.inst[3:2] == 2'b00)
-                    begin
-                      if(cache_mem_out[0][0].valid == 1'b1 && (cache_mem_out[0][0].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[0][0].data;                         
-                          hit <= 1'b1;
-                          if(c1_inf.Data_out == cache_mem_out[0][0].data)
-                            done <= 1'b1;
+              done       <= 1'b0;
+              if(c1_inf.inst[9:8] == 2'b00)
+                begin
+                  done <= 1'b1;
+                end
+              else if (c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10) 
+                begin
+                if (req_hit) begin
+                    dec = l1_decide(cache_mem_out[req_set][req_hit_way].C_tag, 1'b1, c1_inf.inst[9:8]);
+                    case (dec.action)
+                        ACTION_HIT: begin
+                                     hit <= 1'b1;
+                                     if (c1_inf.inst[9:8] == 2'b01) begin // load
+                                       c1_inf.Data_out <= cache_mem_out[req_set][req_hit_way].data;
+                                      end else begin // store
+                                       c1_inf.write_en    <= 1'b1;
+                                       c1_inf.set_idx      <= req_set;
+                                       c1_inf.way_sel       <= req_hit_way;
+                                       c1_inf.update_line  <= {1'b1, dec.next_state, req_tag, c1_inf.in_data};
+                                      end
+                                    done <= 1'b1;
+                                   end
+                        ACTION_UPGRADE: begin // S -> SM_D
+                            c1_inf.msg_req_out  <= dec.msg_to_send; // GetM
+                            c1_inf.req_addr_out <= c1_inf.inst[7:0];
+                            pending_state        <= dec.next_state; // SM_D
+                            pending_set          <= req_set;
+                            pending_way          <= req_hit_way;
+                            stall                <= 1'b1;
+                            fill_pending         <= 1'b1;
                         end
-                      else if(cache_mem_out[0][1].valid == 1'b1 && (cache_mem_out[0][1].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[0][1].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else 
-                        begin
-                          c1_inf.L1_miss_out <= c1_inf.inst;
-                          miss <= 1'b1;
-                          stall <= 1'b1;
-                          fill_pending <= 1'b1;
-                        end
+                        ACTION_STALL_TRANSIENT: stall <= 1'b1;
+                        default: ;
+                    endcase
+                end
+                else begin
+                    // Genuine miss 
+                    miss <= 1'b1;
+                    if (!cache_mem_out[req_set][0].valid) begin
+                        pending_way <= 1'b0;
+                        dec = l1_decide(INVALID, 1'b0, c1_inf.inst[9:8]);
+                        c1_inf.msg_req_out  <= dec.msg_to_send;
+                        c1_inf.req_addr_out <= c1_inf.inst[7:0];
+                        pending_state        <= dec.next_state;
+                        pending_set          <= req_set;
+                        pending_addr <= c1_inf.inst[7:0];
+                        stall                <= 1'b1;
+                        fill_pending         <= 1'b1;
                     end
-                  else if (c1_inf.inst[3:2] == 2'b01)  
-                    begin
-                      if(cache_mem_out[1][0].valid == 1'b1 && (cache_mem_out[1][0].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[1][0].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else if(cache_mem_out[1][1].valid == 1'b1 && (cache_mem_out[1][1].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[1][1].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else 
-                        begin
-                          c1_inf.L1_miss_out <= c1_inf.inst;
-                          miss <= 1'b1;
-                          stall <= 1'b1;
-                          write_back <= 1'b0;
-                          fill_pending <= 1'b1;
-                        end
+                    else if (!cache_mem_out[req_set][1].valid) begin
+                        pending_way <= 1'b1;
+                        dec = l1_decide(INVALID, 1'b0, c1_inf.inst[9:8]);
+                        c1_inf.msg_req_out  <= dec.msg_to_send;
+                        c1_inf.req_addr_out <= c1_inf.inst[7:0];
+                        pending_state        <= dec.next_state;
+                        pending_set          <= req_set;
+                        pending_addr <= c1_inf.inst[7:0];
+                        stall                <= 1'b1;
+                        fill_pending         <= 1'b1;
                     end
-                  else if (c1_inf.inst[3:2] == 2'b10)
-                    begin
-                      if(cache_mem_out[2][0].valid == 1'b1 && (cache_mem_out[2][0].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[2][0].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
+                    else begin
+                        automatic logic         victim_way   = c1_inf.lru_way;
+                        automatic MESI_STATES_t victim_state = cache_mem_out[req_set][victim_way].C_tag;
+
+                        pending_set <= req_set;
+                        pending_way <= victim_way;
+
+                        if (victim_state == SHARED || victim_state == INVALID) begin
+                            // silent evict, safe to fetch immediately
+                            dec = l1_decide(INVALID, 1'b0, c1_inf.inst[9:8]);
+                            c1_inf.msg_req_out  <= dec.msg_to_send;
+                            c1_inf.req_addr_out <= c1_inf.inst[7:0];
+                            pending_state        <= dec.next_state;
+                            pending_addr <= c1_inf.inst[7:0];
+                            stall                <= 1'b1;
+                            fill_pending         <= 1'b1;
                         end
-                      else if(cache_mem_out[2][1].valid == 1'b1 && (cache_mem_out[2][1].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[2][1].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else 
-                        begin
-                          c1_inf.L1_miss_out <= c1_inf.inst;
-                          miss <= 1'b1;
-                          stall <= 1'b1;
-                          fill_pending <= 1'b1;
-                        end
-                    end
-                   else if (c1_inf.inst[3:2] == 2'b11)
-                    begin
-                      if(cache_mem_out[3][0].valid == 1'b1 && (cache_mem_out[3][0].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[3][0].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else if(cache_mem_out[3][1].valid == 1'b1 && (cache_mem_out[3][1].tag == c1_inf.inst[7:4]))
-                        begin
-                          c1_inf.Data_out <= cache_mem_out[3][1].data;
-                          hit <= 1'b1;
-                          done <= 1'b1;
-                        end
-                      else 
-                        begin
-                          c1_inf.L1_miss_out <= c1_inf.inst;
-                          miss <= 1'b1;
-                          stall <= 1'b1;
-                          fill_pending <= 1'b1;
+                        else begin
+                            // EXCLUSIVE or MODIFIED -- must evict first,
+                            // fetch is deferred until ALLOCATE sees the ack
+                            c1_inf.msg_req_out  <= (victim_state == MODIFIED) ? MSG_PUTM : MSG_PUTE;
+                            c1_inf.req_addr_out <= {cache_mem_out[req_set][victim_way].tag, req_set, 2'b00}; // victim's own address
+                            if (victim_state == MODIFIED)
+                              c1_inf.req_data_out <= cache_mem_out[req_set][victim_way].data;
+                            pending_state <= (victim_state == MODIFIED) ? MI_A : EI_A;
+                            pending_op    <= c1_inf.inst[9:8];
+                            pending_addr  <= c1_inf.inst[7:0]; 
+                            stall         <= 1'b1;
+                            fill_pending  <= 1'b1;
                         end
                     end
                 end
-               else if (c1_inf.inst[9:8] == 2'b10)  // store operation
-                    begin
-                       if (c1_inf.inst[3:2] == 2'b00)
-                         begin
-                           if(cache_mem_out[0][0].valid == 1'b1 && (cache_mem_out[0][0].tag == c1_inf.inst[7:4]))
-                                 begin
-                                  c1_inf.write_en <= 1'b1;
-                                  write_back <= 1'b0;
-                                   c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[0][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                                   c1_inf.set_idx <= 2'b00;
-                                   c1_inf.way_sel <= 1'b0;
-                                   hit <= 1'b1;
-                                   done <= 1'b1;
-                              end
-                           else if(cache_mem_out[0][1].valid == 1'b1 && (cache_mem_out[0][1].tag == c1_inf.inst[7:4]))
-                                begin
-                                  c1_inf.write_en <= 1'b1;
-                                  write_back <= 1'b0;
-                                  c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[0][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                                  c1_inf.set_idx <= 2'b00;
-                                  c1_inf.way_sel <= 1'b1;
-                                  hit <= 1'b1;
-                                  done <= 1'b1;
-                                 end
-                            else 
-                             begin
-                              c1_inf.L1_miss_out <= c1_inf.inst;
-                              miss <= 1'b1;
-                              stall <= 1'b1;
-                              fill_pending <= 1'b1;
-                             end
-                         end
-                       else if (c1_inf.inst[3:2] == 2'b01)
-                         begin
-                           if(cache_mem_out[1][0].valid == 1'b1 && (cache_mem_out[1][0].tag == c1_inf.inst[7:4]))
-                                 begin
-                                  c1_inf.write_en <= 1'b1;
-                                   write_back <= 1'b0;
-                                   c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[1][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                                   c1_inf.set_idx <= 2'b01;
-                                   c1_inf.way_sel <= 1'b0;
-                                   hit <= 1'b1;
-                                   done <= 1'b1;
-                              end
-                           else if(cache_mem_out[1][1].valid == 1'b1 && (cache_mem_out[1][1].tag == c1_inf.inst[7:4]))
-                              begin
-                              c1_inf.write_en <= 1'b1;
-                              write_back <= 1'b0;
-                               c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[1][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                               c1_inf.set_idx <= 2'b01;
-                               c1_inf.way_sel <= 1'b1;
-                               hit <= 1'b1;
-                               done <= 1'b1;
-                             end
-                           else 
-                            begin
-                             c1_inf.L1_miss_out <= c1_inf.inst;
-                             miss <= 1'b1;
-                             stall <= 1'b1;
-                            fill_pending <= 1'b1;
-                            end
+            end 
+           else if (c1_inf.inst[9:8] == 2'b11) begin   
+                if (req_hit) begin
+                    dec = l1_decide(cache_mem_out[req_set][req_hit_way].C_tag, 1'b1, c1_inf.inst[9:8]);
+                    case (dec.action)
+                        ACTION_HIT: begin
+                            c1_inf.write_en    <= 1'b1;
+                            hit <= 1'b1;
+                            c1_inf.set_idx      <= req_set;
+                            c1_inf.way_sel       <= req_hit_way;
+                            c1_inf.update_line  <= {1'b0, dec.next_state, 4'b0, 8'b0};
+                            done <= 1'b1;
                         end
-                     else if (c1_inf.inst[3:2] == 2'b10)
-                         begin
-                           if(cache_mem_out[2][0].valid == 1'b1 && (cache_mem_out[2][0].tag == c1_inf.inst[7:4]))
-                                 begin
-                                  c1_inf.write_en <= 1'b1;
-                                  write_back <= 1'b0;
-                                   c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[2][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                                   c1_inf.set_idx <= 2'b10;
-                                   c1_inf.way_sel <= 1'b0;
-                                   hit <= 1'b1;
-                                   done <= 1'b1;
-                                 end
-                           else if(cache_mem_out[2][1].valid == 1'b1 && (cache_mem_out[2][1].tag == c1_inf.inst[7:4]))
-                               begin
-                                 c1_inf.write_en <= 1'b1;
-                                 write_back <= 1'b0;
-                                 c1_inf.update_line <= {1'b1,1'b1,mesi_on_local_op(cache_mem_out[2][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),c1_inf.inst[7:4],c1_inf.in_data};
-                                 c1_inf.set_idx <= 2'b10;
-                                 c1_inf.way_sel <= 1'b1;
-                                 hit <= 1'b1;
-                                 done <= 1'b1;
-                              end
-                            else 
-                              begin
-                               c1_inf.L1_miss_out <= c1_inf.inst;
-                               miss <= 1'b1;
-                               stall <= 1'b1;
-                              fill_pending <= 1'b1;
-                             end
-                    end
-              else if (c1_inf.inst[9:8] == 2'b11)  //flush operation
-              begin
-                if(c1_inf.inst[3:2] == 2'b00)
-                  begin
-                    if(cache_mem_out[0][0].valid == 1'b1 && cache_mem_out[0][0].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[0][0].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b0;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'b0;
-                            c1_inf.way_sel <= 1'b0;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[0][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                     else if(cache_mem_out[0][1].valid == 1'b1 && cache_mem_out[0][1].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[0][1].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b1;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'b0;
-                            c1_inf.way_sel <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[0][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                  end
-                 else if (c1_inf.inst[3:2] == 2'b01)
-                  begin
-                     if(cache_mem_out[1][0].valid == 1'b1 && cache_mem_out[1][0].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[1][0].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b0;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd1;
-                            c1_inf.way_sel <= 1'b0;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[1][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                     else if(cache_mem_out[1][1].valid == 1'b1 && cache_mem_out[1][1].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[1][1].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b1;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd1;
-                            c1_inf.way_sel <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[1][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end 
-                  end
-                 else if (c1_inf.inst[3:2] == 2'b10)
-                  begin
-                   if(cache_mem_out[2][0].valid == 1'b1 && cache_mem_out[2][0].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[2][0].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b0;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd2;
-                            c1_inf.way_sel <= 1'b0;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[2][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                     else if(cache_mem_out[2][1].valid == 1'b1 && cache_mem_out[2][1].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[2][1].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b1;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd2;
-                            c1_inf.way_sel <= 1'b1;
-                           c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[2][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                  end
-                 else if (c1_inf.inst[3:2] == 2'b11)
-                  begin
-                     if(cache_mem_out[3][0].valid == 1'b1 && cache_mem_out[3][0].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[3][0].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b0;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd3;
-                            c1_inf.way_sel <= 1'b0;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[3][0].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                     else if(cache_mem_out[3][1].valid == 1'b1 && cache_mem_out[3][1].tag == c1_inf.inst[7:4])
-                      begin
-                        if (cache_mem_out[3][1].dirty == 1'b1)
-                          begin
-                            write_back <= 1'b1;
-                            victim_way <= 1'b1;
-                            stall <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.write_en  <= 1'b1;
-                            c1_inf.set_idx <= 2'd3;
-                            c1_inf.way_sel <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,mesi_on_local_op(cache_mem_out[3][1].C_tag,c1_inf.inst[9:8],c1_inf.shared),4'b0,8'b0};
-                            done <= 1'b1;
-                          end
-                      end
-                    end
+                        ACTION_STALL_TRANSIENT: begin 
+                            write_back            <= 1'b1;
+                            c1_inf.msg_req_out    <= dec.msg_to_send;
+                            c1_inf.req_addr_out   <= c1_inf.inst[7:0];
+                            if(dec.msg_to_send == MSG_PUTM)
+                              c1_inf.req_data_out <= cache_mem_out[req_set][req_hit_way].data;
+                            pending_state          <= dec.next_state; // EI_A / MI_A
+                            pending_set            <= req_set;
+                            pending_way            <= req_hit_way;
+                        end
+                        default: ;
+                    endcase
+                end
+                else begin
+                    done <= 1'b1;
+                end
+            end
+        end
+ ALLOCATE : begin
+             if (c1_inf.msg_req_in == MSG_DATA) begin
+               case (pending_state)
+                 EI_A, MI_A: begin
+               
+                c1_inf.write_en   <= 1'b1;
+                c1_inf.set_idx     <= pending_set;
+                c1_inf.way_sel      <= pending_way;
+                c1_inf.update_line <= {1'b0, INVALID, 4'b0, 8'b0};
+
+                c1_inf.msg_req_out  <= (pending_op == 2'b01) ? MSG_GETS : MSG_GETM;
+                c1_inf.req_addr_out <= pending_addr;
+                pending_state        <= (pending_op == 2'b01) ? IS_D : IM_D;
+              
+               end
+                IS_D: begin
+                c1_inf.write_en    <= 1'b1;
+                c1_inf.set_idx      <= pending_set;
+                c1_inf.way_sel       <= pending_way;
+                c1_inf.update_line  <= {1'b1,
+                                          c1_inf.is_exclusive_in ? EXCLUSIVE : SHARED,
+                                          pending_addr[7:4],
+                                          c1_inf.req_data_in};
+                c1_inf.msg_req_out  <= MSG_UNBLOCK;
+                stall        <= 1'b0;
+                fill_pending <= 1'b0;
+                done         <= 1'b1;
+               end
+                IM_D: begin
+                c1_inf.write_en    <= 1'b1;
+                c1_inf.set_idx      <= pending_set;
+                c1_inf.way_sel       <= pending_way;
+                c1_inf.update_line  <= {1'b1, MODIFIED, pending_addr[7:4], c1_inf.req_data_in};
+                c1_inf.msg_req_out  <= MSG_UNBLOCK;
+                stall        <= 1'b0;
+                fill_pending <= 1'b0;
+                done         <= 1'b1;
               end
+                SM_D: begin
+                
+                c1_inf.write_en    <= 1'b1;
+                c1_inf.set_idx      <= pending_set;
+                c1_inf.way_sel       <= pending_way;
+                c1_inf.update_line  <= {1'b1, MODIFIED,
+                                          c1_inf.cache_mem_out[pending_set][pending_way].tag,
+                                          c1_inf.cache_mem_out[pending_set][pending_way].data};
+                c1_inf.msg_req_out  <= MSG_UNBLOCK;
+                stall        <= 1'b0;
+                fill_pending <= 1'b0;
+                done         <= 1'b1;
+              end
+
+            default: begin
+             fill_pending <= 1'b0;
+              stall        <= 1'b0;
+               done         <= 1'b1;
+              end 
+        endcase
+    end
+end
+  DONE : begin 
+           done <= 1'b0;
+           c1_inf.write_en <= 1'b0;
+           hit <= 1'b0;
+           miss <= 1'b0;
+            if (!fill_pending) begin
+              pending_state <= INVALID;
+              pending_set   <= 'b0;
+              pending_way   <= 'b0;
+              pending_op    <= 'b0;
+              pending_addr  <= 'b0;
+             end
+         end
+  SNOOP : begin
+            if (!snoop_hit) begin
+              done <= 1'b1;
+             end
+            else begin
+             automatic MESI_STATES_t cur = c1_inf.cache_mem_out[snoop_set][snoop_hit_way].C_tag;
+             automatic l1_decision_t sdec;
+             unique case (cur)
+              INVALID, SHARED, EXCLUSIVE, MODIFIED:
+                sdec = l1_stable_net_decide(cur, c1_inf.msg_req_in);
+              IS_D, IM_D, SM_D, EI_A, MI_A:
+                sdec = l1_transient_decide(cur, c1_inf.msg_req_in);
+              default: sdec = '0;
+             endcase
+
+             c1_inf.msg_req_out  <= sdec.msg_to_send;
+             c1_inf.req_addr_out <= c1_inf.req_addr_in;
+
+             if (sdec.action == ACTION_FORWARD)
+               c1_inf.peer_id_out <= c1_inf.peer_id_in;
+
+            if (sdec.action != ACTION_STALL_TRANSIENT) begin
+              c1_inf.msg_req_out <= sdec.msg_to_send;
+            if (sdec.action == ACTION_FORWARD)
+              c1_inf.peer_id_out <= c1_inf.peer_id_in;
+            if (sdec.msg_to_send == MSG_DATAFWD || sdec.msg_to_send == MSG_PUTM)
+               c1_inf.req_data_out <= c1_inf.cache_mem_out[snoop_set][snoop_hit_way].data; 
+
+              c1_inf.write_en <= 1'b1;
+              c1_inf.set_idx   <= snoop_set;
+              c1_inf.way_sel    <= snoop_hit_way;
+            if (sdec.next_state == INVALID)
+              c1_inf.update_line <= {1'b0, INVALID, 4'b0, 8'b0};
+            else
+             c1_inf.update_line <= {1'b1, sdec.next_state,
+                                 c1_inf.cache_mem_out[snoop_set][snoop_hit_way].tag,
+                                 c1_inf.cache_mem_out[snoop_set][snoop_hit_way].data};
+            end
+             done <= 1'b1; 
            end
           end
-           else  
-            begin
-             if(c1_inf.Data_addr_fetch[3:2] == 2'b00)
-               begin
-                if(fill_pending && c1_inf.data_ready)
-                  begin
-                    if(cache_mem_out[0][0].valid == 1'b0)
-                      begin
-                       write_back <= 1'b0;
-                       c1_inf.write_en <= 1'b1;
-                       c1_inf.set_idx <= 2'b00;
-                       c1_inf.way_sel <= 1'b0;
-                       c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                       hit <= 1'b0;
-                       stall <= 1'b0;
-                       fill_pending <= 1'b0;
-                      end
-                   else if (cache_mem_out[0][1].valid == 1'b0)
-                      begin
-                       write_back <= 1'b0;
-                       c1_inf.write_en <= 1'b1;
-                       c1_inf.set_idx <= 2'b00;
-                       c1_inf.way_sel <= 1'b1;
-                       c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                       hit <= 1'b0;
-                       stall <= 1'b0;
-                       fill_pending <= 1'b0;
-                      end
-                 else 
-                  begin
-                     if(cache_mem_out[0][(c1_inf.lru_way)].dirty == 1'b0)
-                    begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b00;
-                  c1_inf.way_sel <= c1_inf.lru_way;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0; 
-                  fill_pending <= 1'b0;
-                 end
-                 else 
-                 begin
-                   write_back <= 1'b1;
-                   victim_way <=  c1_inf.lru_way;
-                   stall <= 1'b1;
-                   // fill_pending stays 1 — victim must be written back first
-                 end
-               end                        
-            end
-      else if (c1_inf.Data_addr_fetch[3:2] == 2'b01)
-       begin
-          if(fill_pending && c1_inf.data_ready)
-           begin
-              if(cache_mem_out[1][0].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b01;
-                  c1_inf.way_sel <= 1'b0;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else if (cache_mem_out[1][1].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b01;
-                  c1_inf.way_sel <= 1'b1;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else 
-               begin
-                 if(cache_mem_out[1][(c1_inf.lru_way)].dirty == 1'b0)
-                 begin
-                   write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b01;
-                  c1_inf.way_sel <=  c1_inf.lru_way;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0; 
-                  fill_pending <= 1'b0;
-                 end
-                else 
-                 begin
-                   write_back <= 1'b1;
-                   victim_way <=  c1_inf.lru_way;
-                   hit <= 1'b0;
-                   stall <= 1'b1;
-                   // fill_pending stays 1
-                 end
-               end                        
-           end 
-       end
-      else if (c1_inf.Data_addr_fetch[3:2] == 2'b10)
-       begin
-          if(fill_pending && c1_inf.data_ready)
-           begin
-              if(cache_mem_out[2][0].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b10;
-                  c1_inf.way_sel <= 1'b0;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else if (cache_mem_out[2][1].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b10;
-                  c1_inf.way_sel <= 1'b1;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else 
-               begin
-                 if(cache_mem_out[2][(c1_inf.lru_way)].dirty == 1'b0)
-                 begin
-                   write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b10;
-                  c1_inf.way_sel <= c1_inf.lru_way;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch}; 
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-                 end
-                else 
-                 begin
-                   write_back <= 1'b1;
-                   victim_way <= c1_inf.lru_way;
-                   hit <= 1'b0;
-                   stall <= 1'b1;
-                   // fill_pending stays 1
-                 end
-               end                        
-           end 
-       end
-      else if (c1_inf.Data_addr_fetch[3:2] == 2'b11)
-       begin
-          if(fill_pending && c1_inf.data_ready)
-           begin
-              if(cache_mem_out[3][0].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b11;
-                  c1_inf.way_sel <= 1'b0;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else if (cache_mem_out[3][1].valid == 1'b0)
-               begin
-                 write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b11;
-                  c1_inf.way_sel <= 1'b1;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch};
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-               end
-              else 
-               begin
-                 if(cache_mem_out[3][(c1_inf.lru_way)].dirty == 1'b0)
-                 begin
-                   write_back <= 1'b0;
-                  c1_inf.write_en <= 1'b1;
-                  c1_inf.set_idx <= 2'b11;
-                  c1_inf.way_sel <= c1_inf.lru_way;
-                  c1_inf.update_line <= {1'b1,1'b0,mesi_on_local_op(INVALID,2'b01,c1_inf.shared),c1_inf.Data_addr_fetch[7:4],c1_inf.Data_fetch}; 
-                  hit <= 1'b0;
-                  stall <= 1'b0;
-                  fill_pending <= 1'b0;
-                 end
-                else 
-                 begin
-                   write_back <= 1'b1;
-                   victim_way <= c1_inf.lru_way;
-                   stall <= 1'b1;
-                   // fill_pending stays 1
-                 end
-               end                        
-           end 
-       end
-   end
-    end
-  end
-   DONE : begin
-            done <= 1'b0;
-            hit <= 1'b0;
-            miss <= 1'b0;
-            c1_inf.mem_wr_req <= 1'b0;
-            c1_inf.snoop_ack <= 1'b0;
-            snoop_done <= 1'b0;
-            c1_inf.write_en <= 1'b0;
-            write_back <= 1'b0;
-          end
-   SNOOP : begin
-             if(c1_inf.snoop_read == 1'b1)
-               begin
-                 if(c1_inf.snoop_addr[3:2] == 2'b00)
-                   begin
-                    if(cache_mem_out[0][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[0][0].tag)
-                      begin
-                        if (cache_mem_out[0][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            stall <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[0][0].valid,cache_mem_out[0][0].dirty,mesi_on_snoop(cache_mem_out[0][0].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[0][0].tag,cache_mem_out[0][0].data}; 
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[0][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[0][1].tag)
-                      begin
-                         if (cache_mem_out[0][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[0][1].valid,cache_mem_out[0][1].dirty,mesi_on_snoop(cache_mem_out[0][1].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[0][1].tag,cache_mem_out[0][1].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 else if(c1_inf.snoop_addr[3:2] == 2'b01)
-                   begin
-                    if(cache_mem_out[1][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[1][0].tag)
-                      begin
-                          if (cache_mem_out[1][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[1][0].valid,cache_mem_out[1][0].dirty,mesi_on_snoop(cache_mem_out[1][0].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[1][0].tag,cache_mem_out[1][0].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[1][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[1][1].tag)
-                      begin
-                         if (cache_mem_out[1][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[1][1].valid,cache_mem_out[1][1].dirty,mesi_on_snoop(cache_mem_out[1][1].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[1][1].tag,cache_mem_out[1][1].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                      else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 if(c1_inf.snoop_addr[3:2] == 2'b10)
-                   begin
-                    if(cache_mem_out[2][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[2][0].tag)
-                      begin
-                        if (cache_mem_out[2][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[2][0].valid,cache_mem_out[2][0].dirty,mesi_on_snoop(cache_mem_out[2][0].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[2][0].tag,cache_mem_out[2][0].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[2][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[2][1].tag)
-                      begin
-                         if (cache_mem_out[2][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[2][1].valid,cache_mem_out[2][1].dirty,mesi_on_snoop(cache_mem_out[2][1].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[2][1].tag,cache_mem_out[2][1].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                        else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 if(c1_inf.snoop_addr[3:2] == 2'b11)
-                   begin
-                    if(cache_mem_out[3][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[3][0].tag)
-                      begin
-                         if (cache_mem_out[3][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[3][0].valid,cache_mem_out[3][0].dirty,mesi_on_snoop(cache_mem_out[3][0].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[3][0].tag,cache_mem_out[3][0].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[3][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[3][1].tag)
-                      begin
-                         if (cache_mem_out[3][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_read <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {cache_mem_out[3][1].valid,cache_mem_out[3][1].dirty,mesi_on_snoop(cache_mem_out[3][1].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[3][1].tag,cache_mem_out[3][1].data};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                        else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-               end
-             else if(c1_inf.snoop_write == 1'b1)
-               begin
-                 if(c1_inf.snoop_addr[3:2] == 2'b00)
-                   begin
-                    if(cache_mem_out[0][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[0][0].tag)
-                      begin
-                          if (cache_mem_out[0][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[0][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[0][1].tag)
-                      begin
-                          if (cache_mem_out[0][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                             c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                        else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 else if(c1_inf.snoop_addr[3:2] == 2'b01)
-                   begin
-                    if(cache_mem_out[1][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[1][0].tag)
-                      begin
-                         if (cache_mem_out[1][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                             c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[1][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[1][1].tag)
-                      begin
-                         if (cache_mem_out[1][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                        else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 if(c1_inf.snoop_addr[3:2] == 2'b10)
-                   begin
-                    if(cache_mem_out[2][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[2][0].tag)
-                      begin
-                         if (cache_mem_out[2][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                             c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[2][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[2][1].tag)
-                      begin
-                        if (cache_mem_out[2][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                            c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                        else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-                 if(c1_inf.snoop_addr[3:2] == 2'b11)
-                   begin
-                    if(cache_mem_out[3][0].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[3][0].tag)
-                      begin
-                        if (cache_mem_out[3][0].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b0;
-                          end
-                        else 
-                          begin
-                             c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= 1'b0;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                        end
-                     else if(cache_mem_out[3][1].valid == 1'b1 && c1_inf.snoop_addr[7:4] == cache_mem_out[3][1].tag)
-                      begin
-                        if (cache_mem_out[3][1].C_tag == MODIFIED)
-                          begin
-                            write_back <= 1'b1;
-                            stall <= 1'b1;
-                            snoop_wb_write <= 1'b1;
-                            victim_way <= 1'b1;
-                          end
-                        else 
-                          begin
-                             c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= 1'b1;
-                            c1_inf.write_en <= 1'b1;
-                            c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                            c1_inf.snoop_ack <= 1'b1;
-                            snoop_done <= 1'b1;
-                          end
-                      end
-                      else 
-                       begin
-                         c1_inf.snoop_ack <= 1'b1;
-                          snoop_done <= 1'b1;
-                       end
-                    end
-               end
-           end  
   WRITEBACK : begin
-                if(snoop_wb_write  == 1'b1)
-                  begin
-                   if(c1_inf.snoop_addr[3:2] == 2'b00)
-                      begin
-                       if(cache_mem_out[0][victim_way].valid == 1'b1 && cache_mem_out[0][victim_way].tag == c1_inf.snoop_addr[7:4])
-                        begin
-                         if(cache_mem_out[0][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[0][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b00;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                         end             
-                       end               
-                   else if(c1_inf.snoop_addr[3:2] == 2'b01)
-                    begin
-                     if(cache_mem_out[1][victim_way].valid == 1'b1 && cache_mem_out[1][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[1][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[1][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b01;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end          
-                   end
-                   else if(c1_inf.snoop_addr[3:2] == 2'b10)
-                    begin
-                     if(cache_mem_out[2][victim_way].valid == 1'b1 && cache_mem_out[2][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[2][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[2][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b10;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end   
-                   end
-                   else if(c1_inf.snoop_addr[3:2] == 2'b11)
-                   begin
-                     if(cache_mem_out[3][victim_way].valid == 1'b1 && cache_mem_out[3][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[3][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[3][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b11;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end   
-                   end
-                   snoop_wb_write <= 1'b0;
+                 if (c1_inf.msg_req_in == MSG_DATA) begin
+                    c1_inf.write_en    <= 1'b1;
+                    c1_inf.set_idx     <= pending_set;
+                    c1_inf.way_sel     <= pending_way;
+                    c1_inf.update_line <= {1'b0, INVALID, 4'b0, 8'b0};
+                     write_back <= 1'b0;
+                    done       <= 1'b1;
                   end
-                 else if (snoop_wb_read  == 1'b1)
-                   begin
-                   if(c1_inf.snoop_addr[3:2] == 2'b00)
-                    begin
-                     if(cache_mem_out[0][victim_way].valid == 1'b1 && cache_mem_out[0][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[0][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[0][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b00;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(MODIFIED,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].data};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b00;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[0][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].data};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                         end             
-                       end               
-                   else if(c1_inf.snoop_addr[3:2] == 2'b01)
-                    begin
-                     if(cache_mem_out[1][victim_way].valid == 1'b1 && cache_mem_out[1][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[1][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[1][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b01;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[1][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].data};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b01;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[1][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].data};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end          
-                    end
-                   else if(c1_inf.snoop_addr[3:2] == 2'b10)
-                   begin
-                     if(cache_mem_out[2][victim_way].valid == 1'b1 && cache_mem_out[2][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[2][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[2][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b10;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[2][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].data};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b10;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[2][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].data};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end   
-                   end
-                   else if(c1_inf.snoop_addr[3:2] == 2'b11)
-                   begin
-                     if(cache_mem_out[3][victim_way].valid == 1'b1 && cache_mem_out[3][victim_way].tag == c1_inf.snoop_addr[7:4])
-                       begin
-                         if(cache_mem_out[3][victim_way].C_tag == MODIFIED)
-                           begin
-                             c1_inf.mem_wr_req <= 1'b1;
-                             c1_inf.mem_addr <= {cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].set_index};
-                             if(c1_inf.mem_ready)
-                               begin
-                                 c1_inf.mem_data <= cache_mem_out[3][victim_way].data;
-                                 c1_inf.write_en <= 1'b1;
-                                 c1_inf.set_idx <= 2'b11;
-                                 c1_inf.way_sel <= victim_way;
-                                 c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[3][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].data};
-                                 done <= 1'b1;
-                                 stall <= 1'b0;
-                                 write_back <= 1'b0;
-                               end
-                           end
-                         else 
-                           begin
-                             c1_inf.write_en <= 1'b1;
-                             c1_inf.set_idx <= 2'b11;
-                             c1_inf.way_sel <= victim_way;
-                             c1_inf.update_line <= {1'b1,1'b0,mesi_on_snoop(cache_mem_out[3][victim_way].C_tag,c1_inf.snoop_read,c1_inf.snoop_write),cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].data};
-                             done <= 1'b1;
-                             stall <= 1'b0;
-                             write_back <= 1'b0; 
-                           end
-                       end   
-                   end     
-                    snoop_wb_read <= 1'b0;    
-                   end                  
-                  else if (c1_inf.inst[9:8] == 2'b10)
-                    begin
-                     if(c1_inf.inst[3:2] == 2'b00)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                          c1_inf.mem_addr <= {cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[0][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b00;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;                                 
-                             end
-                       end 
-                      else if (c1_inf.inst[3:2] == 2'b01)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                         c1_inf.mem_addr <= {cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[1][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b01;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;                               
-                             end
-                       end
-                       else if (c1_inf.inst[3:2] == 2'b10)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                         c1_inf.mem_addr <= {cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].set_index}; 
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[2][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b10;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;                           
-                             end
-                       end
-                       else if (c1_inf.inst[3:2] == 2'b11)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                         c1_inf.mem_addr <= {cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[3][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b11;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;   
-                             end
-                       end
-                     else if (c1_inf.inst[9:8] == 2'b11)
-                      begin
-                      if(c1_inf.inst[3:2] == 2'b00)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                         c1_inf.mem_addr <= {cache_mem_out[0][victim_way].tag,cache_mem_out[0][victim_way].set_index}; 
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[0][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b00;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;    
-                             end
-                       end 
-                      else if (c1_inf.inst[3:2] == 2'b01)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                          c1_inf.mem_addr <= {cache_mem_out[1][victim_way].tag,cache_mem_out[1][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[1][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b01;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;   
-                             end
-                       end
-                       else if (c1_inf.inst[3:2] == 2'b10)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                          c1_inf.mem_addr <= {cache_mem_out[2][victim_way].tag,cache_mem_out[2][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[2][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b10;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;  
-                             end
-                       end
-                       else if (c1_inf.inst[3:2] == 2'b11)
-                       begin
-                         c1_inf.mem_wr_req <= 1'b1;
-                         c1_inf.mem_addr <= {cache_mem_out[3][victim_way].tag,cache_mem_out[3][victim_way].set_index};
-                           if (c1_inf.mem_ready)
-                             begin 
-                               c1_inf.mem_data <= cache_mem_out[3][victim_way].data;
-                               c1_inf.write_en <= 1'b1;
-                               c1_inf.set_idx <= 2'b11;
-                               c1_inf.way_sel <= victim_way;
-                               c1_inf.update_line <= {1'b0,1'b0,INVALID,4'b0,8'b0};
-                               done <= 1'b1;
-                                stall <= 1'b0;
-                               write_back <= 1'b0;                                  
-                             end
-                       end   
-                    end  
-                  end
-             end
-  endcase          
+               end
+  endcase
 end
 always_comb
 begin
   if (hit || miss)
    begin
-     if(c1_inf.snoop_read  || c1_inf.snoop_write)
+     if(c1_inf.msg_req_in == MSG_FWD_GETM || c1_inf.msg_req_in == MSG_FWD_GETS)
        begin
-         c1_inf.lru_id = c1_inf.snoop_addr[3:2];
+         c1_inf.lru_id = c1_inf.req_addr_in[3:2];
          c1_inf.update_lru = 1'b1;
        end 
      else if (c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10)
@@ -1489,29 +467,244 @@ begin
   else 
     c1_inf.update_lru = 1'b0;   
 end
-function MESI_STATES_t mesi_on_local_op(
-    input MESI_STATES_t current_mesi,
-    input logic [1:0] op_code,
-    input logic shared_line
+function l1_decision_t l1_decide(
+    input MESI_STATES_t cur_state,
+    input logic         line_valid,
+    input logic [1:0]   inst
 );
-    case (current_mesi)
-        INVALID:   mesi_on_local_op = (op_code==2'b01) ? (shared_line?SHARED:EXCLUSIVE)
-                                     : (op_code==2'b10) ? MODIFIED : INVALID;
-        EXCLUSIVE: mesi_on_local_op = (op_code==2'b10) ? MODIFIED : EXCLUSIVE;
-        SHARED:    mesi_on_local_op = (op_code==2'b10) ? MODIFIED : SHARED;
-        MODIFIED:  mesi_on_local_op = MODIFIED; // local ops never leave M
-        default:   mesi_on_local_op = current_mesi;
+    logic is_load;
+    logic flush;
+    l1_decide = '0;          
+
+    is_load = (inst == 2'b01);   
+    flush = (inst == 2'b11);
+    if(flush)
+      begin
+        case(cur_state)
+         EXCLUSIVE : begin
+                       l1_decide.action = ACTION_STALL_TRANSIENT;
+                       l1_decide.msg_to_send = MSG_PUTE;
+                       l1_decide.next_state = EI_A;
+                     end
+          MODIFIED : begin
+                       l1_decide.action = ACTION_STALL_TRANSIENT;
+                       l1_decide.msg_to_send = MSG_PUTM;
+                       l1_decide.next_state = MI_A;
+                     end
+         SHARED : begin
+                     l1_decide.action = ACTION_HIT;
+                     l1_decide.next_state = INVALID;
+                  end
+        endcase
+      end
+
+    else if (!line_valid) begin
+        l1_decide.action      = ACTION_MISS;
+        l1_decide.msg_to_send = is_load ? MSG_GETS : MSG_GETM;
+        l1_decide.next_state  = is_load ? IS_D : IM_D;
+    end
+    else 
+       begin
+        case (cur_state)
+        MODIFIED, EXCLUSIVE: begin
+            l1_decide.action     = ACTION_HIT;
+            l1_decide.next_state = is_load ? cur_state : MODIFIED;
+        end
+        SHARED: begin
+            if (is_load) begin
+                l1_decide.action     = ACTION_HIT;
+                l1_decide.next_state = SHARED;
+            end else begin
+                l1_decide.action      = ACTION_UPGRADE;
+                l1_decide.msg_to_send = MSG_GETM;
+                l1_decide.next_state  = SM_D;
+            end
+        end
+        INVALID : begin
+                    if(is_load)
+                      begin
+                        l1_decide.action = ACTION_MISS;
+                        l1_decide.msg_to_send = MSG_GETS;
+                        l1_decide.next_state = IS_D;
+                      end
+                    else 
+                      begin
+                         l1_decide.action = ACTION_MISS;
+                        l1_decide.msg_to_send = MSG_GETM;
+                        l1_decide.next_state = IM_D;
+                      end
+                  end
+        IS_D, IM_D, SM_D, EI_A, MI_A: l1_decide.action = ACTION_STALL_TRANSIENT;
+        default: l1_decide.action = ACTION_STALL_TRANSIENT;
+    endcase
+       end
+endfunction
+
+function l1_decision_t l1_decide_on_msg(
+    input MESI_STATES_t cur_state,   
+    input l1_msg_in_t   msg_req_in   
+);
+    l1_decide_on_msg = '0;
+
+    case (cur_state)
+
+        IS_D: case (msg_req_in)
+            MSG_DATA: begin
+                l1_decide_on_msg.action      = ACTION_HIT;
+                l1_decide_on_msg.msg_to_send = MSG_UNBLOCK;
+                l1_decide_on_msg.next_state  = SHARED;
+            end
+            default: l1_decide_on_msg.action = ACTION_STALL_TRANSIENT;
+        endcase
+
+        IM_D: case (msg_req_in)
+            MSG_DATA: begin
+                l1_decide_on_msg.action      = ACTION_HIT;
+                l1_decide_on_msg.msg_to_send = MSG_UNBLOCK;
+                l1_decide_on_msg.next_state  = MODIFIED;
+            end
+            default: l1_decide_on_msg.action = ACTION_STALL_TRANSIENT;
+        endcase
+
+        SM_D: case (msg_req_in)
+            MSG_DATA: begin
+                l1_decide_on_msg.action      = ACTION_HIT;
+                l1_decide_on_msg.msg_to_send = MSG_UNBLOCK;
+                l1_decide_on_msg.next_state  = MODIFIED;
+            end
+            default: l1_decide_on_msg.action = ACTION_STALL_TRANSIENT;
+        endcase
+
+        EI_A, MI_A: case (msg_req_in)
+            MSG_DATA: begin  // empty Data message used as Put-Ack
+                l1_decide_on_msg.action      = ACTION_HIT;
+                l1_decide_on_msg.msg_to_send = MSG_UNBLOCK;
+                l1_decide_on_msg.next_state  = INVALID;
+            end
+            default: l1_decide_on_msg.action = ACTION_STALL_TRANSIENT;
+        endcase
+
+        default: l1_decide_on_msg.action = ACTION_STALL_TRANSIENT;
+
     endcase
 endfunction
 
-function MESI_STATES_t mesi_on_snoop(
-    input MESI_STATES_t current_mesi,
-    input logic snoop_rd,
-    input logic snoop_wr
+function l1_decision_t l1_stable_net_decide(  // for snoop 
+    input MESI_STATES_t cur_state,   
+    input  l1_msg_in_t msg_req_in
 );
-    if (snoop_wr)      mesi_on_snoop = INVALID;
-    else if (snoop_rd) mesi_on_snoop = (current_mesi==MODIFIED || current_mesi==EXCLUSIVE) ? SHARED : current_mesi;
-    else               mesi_on_snoop = current_mesi;
+    l1_stable_net_decide = '0;   
+
+    case (cur_state)
+
+        INVALID: case (msg_req_in)
+            MSG_INV: begin
+                l1_stable_net_decide.action      = ACTION_ACK_VACUOUS;
+                l1_stable_net_decide.msg_to_send = MSG_INVACK;
+                l1_stable_net_decide.next_state  = INVALID;
+            end
+            default: l1_stable_net_decide.action = ACTION_STALL_TRANSIENT;
+        endcase
+
+        SHARED: case (msg_req_in)
+            MSG_INV: begin
+                l1_stable_net_decide.action      = ACTION_INVALIDATE;
+                l1_stable_net_decide.msg_to_send = MSG_INVACK;
+                l1_stable_net_decide.next_state  = INVALID;
+            end
+            default: l1_stable_net_decide.action = ACTION_STALL_TRANSIENT; 
+        endcase
+
+        EXCLUSIVE: case (msg_req_in)
+             MSG_INV: begin
+               l1_stable_net_decide.action      = ACTION_INVALIDATE;
+               l1_stable_net_decide.msg_to_send = MSG_PUTE;  
+               l1_stable_net_decide.next_state  = INVALID;
+              end
+            MSG_FWD_GETS: begin
+                l1_stable_net_decide.action      = ACTION_FORWARD;
+                l1_stable_net_decide.msg_to_send = MSG_DATAFWD;  
+                l1_stable_net_decide.msg_to_dir  = MSG_ACK;        
+                l1_stable_net_decide.next_state  = SHARED;
+            end
+            MSG_FWD_GETM: begin
+                l1_stable_net_decide.action      = ACTION_FORWARD;
+                l1_stable_net_decide.msg_to_send = MSG_DATAFWD;
+                l1_stable_net_decide.msg_to_dir  = MSG_ACK;
+                l1_stable_net_decide.next_state  = INVALID;
+            end
+            default: l1_stable_net_decide.action = ACTION_STALL_TRANSIENT; 
+        endcase
+
+        MODIFIED: case (msg_req_in)
+            MSG_INV: begin
+              l1_stable_net_decide.action      = ACTION_INVALIDATE;
+              l1_stable_net_decide.msg_to_send = MSG_PUTM;  
+              l1_stable_net_decide.next_state  = INVALID;
+            end
+            MSG_FWD_GETS: begin
+                l1_stable_net_decide.action      = ACTION_FORWARD;
+                l1_stable_net_decide.msg_to_send = MSG_DATAFWD;
+                l1_stable_net_decide.msg_to_dir  = MSG_ACK;
+                l1_stable_net_decide.next_state  = SHARED;
+            end
+            MSG_FWD_GETM: begin
+                l1_stable_net_decide.action      = ACTION_FORWARD;
+                l1_stable_net_decide.msg_to_send = MSG_DATAFWD;
+                l1_stable_net_decide.msg_to_dir  = MSG_ACK;
+                l1_stable_net_decide.next_state  = INVALID;
+            end
+            default: l1_stable_net_decide.action = ACTION_STALL_TRANSIENT; 
+        endcase
+
+        default: l1_stable_net_decide.action = ACTION_STALL_TRANSIENT; 
+
+    endcase
+endfunction
+
+function l1_decision_t l1_transient_decide(  //for snoop 
+    input MESI_STATES_t cur_state,   
+    input l1_msg_in_t   msg_req_in   
+);
+    l1_transient_decide = '0;
+
+    case (cur_state)
+        IS_D, IM_D: begin
+            l1_transient_decide.action     = ACTION_STALL_TRANSIENT;
+            l1_transient_decide.next_state = cur_state;
+        end
+
+        SM_D: case (msg_req_in)
+            MSG_INV: begin
+                l1_transient_decide.action      = ACTION_INVALIDATE;
+                l1_transient_decide.msg_to_send = MSG_INVACK;
+                l1_transient_decide.next_state  = IM_D;
+            end
+            default: begin
+                l1_transient_decide.action     = ACTION_STALL_TRANSIENT;
+                l1_transient_decide.next_state = SM_D;
+            end
+        endcase
+
+        MI_A, EI_A: case (msg_req_in)
+            MSG_FWD_GETS: begin
+                l1_transient_decide.action      = ACTION_FORWARD;
+                l1_transient_decide.msg_to_send = MSG_DATAFWD;
+                l1_transient_decide.next_state  = SHARED;
+            end
+            MSG_FWD_GETM: begin
+                l1_transient_decide.action      = ACTION_FORWARD;
+                l1_transient_decide.msg_to_send = MSG_DATAFWD;
+                l1_transient_decide.next_state  = INVALID;
+            end
+            default: begin
+                l1_transient_decide.action     = ACTION_STALL_TRANSIENT;
+                l1_transient_decide.next_state = cur_state;
+            end
+        endcase
+
+        default: l1_transient_decide.action = ACTION_STALL_TRANSIENT;
+    endcase
 endfunction
 
 endmodule
