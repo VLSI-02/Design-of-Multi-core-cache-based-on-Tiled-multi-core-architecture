@@ -1,34 +1,25 @@
-module cache_lru(cache.cache_lru_mb c1_inf);
-//cache c1_inf();
+module cache_lru(cache_v1.cache_lru_mb c1_inf);
 logic [3:0]lru_tag = 4'b0000;
+always_ff @(posedge c1_inf.clk or posedge c1_inf.rst)
+begin
+  if (c1_inf.rst)
+    lru_tag <= 4'b0000;
+  else if (c1_inf.update_lru)
+    case (c1_inf.lru_id)
+      2'b00: lru_tag[0] <= ~lru_tag[0];
+      2'b01: lru_tag[1] <= ~lru_tag[1];
+      2'b10: lru_tag[2] <= ~lru_tag[2];
+      default: lru_tag[3] <= ~lru_tag[3];
+    endcase
+end
+
 always_comb
 begin
-   if(c1_inf.rst)
-     begin
-       lru_tag <= 4'b0000;
-     end
-   else if ( c1_inf.update_lru == 1)
-      begin
-        if (c1_inf.lru_id == 2'b00)
-          begin
-            lru_tag[0]  =  ~lru_tag[0];
-            c1_inf.lru_way = lru_tag[0];
-          end
-        else if(c1_inf.lru_id == 2'b01)
-          begin
-            lru_tag[1] = ~lru_tag[1];
-            c1_inf.lru_way = lru_tag[0];
-          end
-        else if (c1_inf.lru_id == 2'b10)
-          begin
-            lru_tag[2] = ~lru_tag[2];
-            c1_inf.lru_way = lru_tag[0];
-          end
-        else 
-          begin
-            lru_tag[3] = ~lru_tag[3];
-            c1_inf.lru_way = lru_tag[0];
-          end
-      end
+  case (c1_inf.lru_id)
+    2'b00: c1_inf.lru_way = lru_tag[0];
+    2'b01: c1_inf.lru_way = lru_tag[1];
+    2'b10: c1_inf.lru_way = lru_tag[2];
+    default: c1_inf.lru_way = lru_tag[3];
+  endcase
 end
 endmodule
