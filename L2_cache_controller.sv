@@ -45,7 +45,6 @@ module l2_cache_controller #(
        if (c2_inf.rst) compare_settled <= 1'b0;
          else begin
            compare_settled <= (C_PS == L2_COMPARE);
-            if ($time < 20) $display("CANARY: compare_settled fix IS compiled in, at T=%0t", $time);
           end
         end
     genvar gi;
