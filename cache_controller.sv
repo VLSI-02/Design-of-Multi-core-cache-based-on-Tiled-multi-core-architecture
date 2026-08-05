@@ -84,10 +84,8 @@ begin
               begin
                 C_NS <= ALLOCATE;
               end
-            else if (c1_inf.inst[9:8] == 2'b00 || c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10|| c1_inf.inst[9:8] == 2'b10)
-              begin
-                C_NS <= COMPARE;
-              end
+            else if (c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10 || c1_inf.inst[9:8] == 2'b11)
+               C_NS <= COMPARE;
             else
               begin
                 C_NS <= IDLE;
@@ -129,27 +127,21 @@ begin
                    C_NS <= ALLOCATE;
                  end
              end
-   DONE : begin
-             if(c1_inf.rst)
-               begin
-                 C_NS <= IDLE;
-               end
-             else if (c1_inf.msg_req_in == MSG_FWD_GETS || c1_inf.msg_req_in == MSG_FWD_GETM || c1_inf.msg_req_in == MSG_INV)
-               begin
-                 C_NS <= SNOOP;
-               end
-             else if(fill_pending == 1'b1 && c1_inf.msg_req_in == MSG_DATA)
-               begin
-                 C_NS <= ALLOCATE;
-               end
-             else if (c1_inf.inst[9:8] == 2'b00 || c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10|| c1_inf.inst[9:8] == 2'b10)
-               begin
-                 C_NS <= COMPARE;
-               end
-             else
-               begin
-                 C_NS <= DONE;
-               end
+    DONE : begin
+            if(c1_inf.rst)
+              C_NS <= IDLE;
+            else if (c1_inf.msg_req_in == MSG_FWD_GETS || c1_inf.msg_req_in == MSG_FWD_GETM || c1_inf.msg_req_in == MSG_INV)
+              C_NS <= SNOOP;
+           else if(fill_pending == 1'b1 && c1_inf.msg_req_in == MSG_DATA)
+              C_NS <= ALLOCATE;
+           else if (fill_pending == 1'b1)
+              C_NS <= DONE;
+           else if (c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10)
+              C_NS <= COMPARE;  
+           else if (c1_inf.inst[9:8] == 2'b00)
+              C_NS <= IDLE;     
+           else
+              C_NS <= DONE;
           end
   SNOOP : begin
             if(c1_inf.rst)
@@ -190,7 +182,10 @@ begin
 end
 always_ff @(posedge c1_inf.clk)
 begin
- 
+ c1_inf.msg_req_out  <= MSG_L1_NONE;
+c1_inf.req_addr_out <= '0;
+c1_inf.req_data_out <= '0;
+c1_inf.write_en     <= 1'b0;
   case(C_PS)
    IDLE : begin
             done <= 1'b0;
@@ -201,14 +196,26 @@ begin
                stall      <= 1'b0;
                write_back <= 1'b0; 
               done       <= 1'b0;
-              if(c1_inf.inst[9:8] == 2'b00)
+              if(c1_inf.inst[9:8] == 2'b00 && !fill_pending)
                 begin
                   done <= 1'b1;
                 end
               else if (c1_inf.inst[9:8] == 2'b01 || c1_inf.inst[9:8] == 2'b10) 
                 begin
                 if (req_hit) begin
+
                     dec = l1_decide(cache_mem_out[req_set][req_hit_way].C_tag, 1'b1, c1_inf.inst[9:8]);
+                    $display(
+                      "T=%0t inst=%h dec=%0d hit=%0b req_set=%0d req_tag=%0h req_hit_way = %d victim_state=%0d",
+                       $time,
+                       c1_inf.inst,
+                        dec,
+                        req_hit,
+                       req_set,
+                         req_tag,
+                        req_hit_way,
+                       cache_mem_out[req_set][req_hit_way].C_tag
+                         );
                     case (dec.action)
                         ACTION_HIT: begin
                                      hit <= 1'b1;
@@ -278,10 +285,8 @@ begin
                             fill_pending         <= 1'b1;
                         end
                         else begin
-                            // EXCLUSIVE or MODIFIED -- must evict first,
-                            // fetch is deferred until ALLOCATE sees the ack
                             c1_inf.msg_req_out  <= (victim_state == MODIFIED) ? MSG_PUTM : MSG_PUTE;
-                            c1_inf.req_addr_out <= {cache_mem_out[req_set][victim_way].tag, req_set, 2'b00}; // victim's own address
+                            c1_inf.req_addr_out <= {cache_mem_out[req_set][victim_way].tag, req_set, 2'b00}; 
                             if (victim_state == MODIFIED)
                               c1_inf.req_data_out <= cache_mem_out[req_set][victim_way].data;
                             pending_state <= (victim_state == MODIFIED) ? MI_A : EI_A;
@@ -342,6 +347,7 @@ begin
                 c1_inf.write_en    <= 1'b1;
                 c1_inf.set_idx      <= pending_set;
                 c1_inf.way_sel       <= pending_way;
+                c1_inf.Data_out     <= c1_inf.req_data_in; 
                 c1_inf.update_line  <= {1'b1,
                                           c1_inf.is_exclusive_in ? EXCLUSIVE : SHARED,
                                           pending_addr[7:4],
@@ -384,18 +390,18 @@ begin
     end
 end
   DONE : begin 
-           done <= 1'b0;
-           c1_inf.write_en <= 1'b0;
-           hit <= 1'b0;
-           miss <= 1'b0;
-            if (!fill_pending) begin
-              pending_state <= INVALID;
-              pending_set   <= 'b0;
-              pending_way   <= 'b0;
-              pending_op    <= 'b0;
-              pending_addr  <= 'b0;
-             end
-         end
+         done <= 1'b0;
+         c1_inf.write_en <= 1'b0;
+         hit <= 1'b0;
+        miss <= 1'b0;
+        if (!fill_pending) begin
+        pending_state <= INVALID;
+        pending_set   <= 'b0;
+        pending_way   <= 'b0;
+        pending_op    <= 'b0;
+        pending_addr  <= 'b0;
+    end
+end
   SNOOP : begin
             if (!snoop_hit) begin
               done <= 1'b1;
@@ -410,10 +416,6 @@ end
                 sdec = l1_transient_decide(cur, c1_inf.msg_req_in);
               default: sdec = '0;
              endcase
-
-             c1_inf.msg_req_out  <= sdec.msg_to_send;
-             c1_inf.req_addr_out <= c1_inf.req_addr_in;
-
              if (sdec.action == ACTION_FORWARD)
                c1_inf.peer_id_out <= c1_inf.peer_id_in;
 
