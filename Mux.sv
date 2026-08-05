@@ -12,19 +12,19 @@ module mux #(parameter logic [1:0] MY_BANK_ID = 2'd0) (
    
     input  logic [1:0]  l1_peer_id_out,
 
-    //  to local L2 (its l1_msg_req_in/req_addr_out/req_data_out) 
+    //  to local L2 
     output l1_msg_out_t l2_l1_msg_req_in,
     output logic [7:0]  l2_req_addr_out,
     output logic [7:0]  l2_req_data_out,
 
-    //  to NIC (a remote GetS/GetM/PutM/PutE bypassing L2) 
+    //  to NIC  
     output logic         bypass_valid,
     output l2_nic_pkt_t  bypass_pkt,
 
-    // from local L2 (its l2_l1_data_o, the local reply path)
+    // from local L2 
     input  l2_li_data_t  l2_l1_data_o,
 
-    //from NIC(incoming network traffic for this tile) 
+    //from NIC
     input  logic         nic_in_valid,
     input  l2_nic_pkt_t   nic_in_pkt,
 
