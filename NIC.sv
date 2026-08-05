@@ -1,32 +1,45 @@
-### TOP MODULE
+import l2_cache_pkg::*;
+import L1_cache_mem::*;
 
+// TOP MODULE
 module nic_top(
     input logic clk,
     input logic rst,
-    input logic fifo_wr_en,
-    input logic [15:0] fifo_data_in,
-    input logic [2:0]  src_tile,
-    input logic router_ready,
+
+   
+    input  logic         l2_resp_valid,
+    input  l2_nic_pkt_t  l2_resp_pkt,
+    output logic         l2_resp_ready,  
+  
+    output logic         l2_req_valid,
+    output l2_nic_pkt_t  l2_req_pkt,
+    input  logic         l2_req_ready,   
+   
+    input  logic router_ready,
     output logic router_valid_out,
     output logic [31:0] router_data_out,
-    input logic router_valid_in,
-    input logic [31:0] router_data_in,
-    output logic decode_valid,
-    output logic rw,
-    output logic [2:0] src_out,
-    output logic [2:0] dest_out,
-    output logic [11:0] address_out,
+    input  logic router_valid_in,
+    input  logic [31:0] router_data_in,
+
     output logic fifo_full,
     output logic fifo_empty
 );
-logic [15:0] fifo_data_out;
+logic [31:0] fifo_data_out;
 logic [3:0] fifo_count;
 logic fifo_rd_en;
+logic fifo_wr_en;
+logic [31:0] fifo_data_in;
 logic [31:0] packet;
 logic packet_valid;
 logic [31:0] rx_packet;
 logic rx_packet_valid;
 logic tx_ready;
+
+
+assign fifo_wr_en   = l2_resp_valid;
+assign fifo_data_in = pack_flit(l2_resp_pkt);
+assign l2_resp_ready = !fifo_full;
+
 request_fifo fifo
 (
     .clk(clk),
@@ -45,7 +58,6 @@ packet_generator pg
     .rst(rst),
     .fifo_data(fifo_data_out),
     .fifo_valid(~fifo_empty),
-    .src_tile(src_tile),
     .tx_ready(tx_ready),
     .packet(packet),
     .packet_valid(packet_valid),
@@ -77,27 +89,41 @@ packet_decoder decoder
     .rst(rst),
     .packet(rx_packet),
     .packet_valid(rx_packet_valid),
-    .decode_valid(decode_valid),
-    .rw(rw),
-    .src_tile(src_out),
-    .dest_tile(dest_out),
-    .address(address_out)
+    .decode_valid(l2_req_valid),
+    .pkt_out(l2_req_pkt)
 );
-endmodule
-### FIFO
 
+
+function automatic logic [31:0] pack_flit(l2_nic_pkt_t p);
+    pack_flit = {p.dest_id[1:0], p.src_id[1:0], p.msg, p.we, p.is_exclusive_in,
+                 p.addr, p.data, 6'b0};
+endfunction
+
+function automatic l2_nic_pkt_t unpack_flit(logic [31:0] f);
+    unpack_flit.dest_id          = {1'b0, f[31:30]};
+    unpack_flit.src_id           = {1'b0, f[29:28]};
+    unpack_flit.msg              = l2_nic_msg_t'(f[27:24]);
+    unpack_flit.we               = f[23];
+    unpack_flit.is_exclusive_in  = f[22];
+    unpack_flit.addr             = f[21:14];
+    unpack_flit.data             = f[13:6];
+endfunction
+
+endmodule
+
+//FIFO 
 module request_fifo(
     input  logic clk,
     input  logic rst,
     input  logic wr_en,
-    input  logic [15:0] data_in,
+    input  logic [31:0] data_in,
     input  logic rd_en,
-    output logic [15:0] data_out,
+    output logic [31:0] data_out,
     output logic full,
     output logic empty,
     output logic [3:0] count
 );
-logic [15:0] mem [0:7];
+logic [31:0] mem [0:7];
 logic [2:0] wr_ptr;
 logic [2:0] rd_ptr;
 always_ff @(posedge clk or posedge rst)
@@ -108,7 +134,7 @@ begin
         rd_ptr <= 3'b000;
         count <= 4'd0;
         for(int i=0;i<8;i++)
-            mem[i] <= 16'd0;
+            mem[i] <= 32'd0;
     end
     else
     begin
@@ -145,27 +171,18 @@ end
 assign empty = (count == 0);
 assign full  = (count == 8);
 endmodule
-### PACKET GENERATOR
+
+
 module packet_generator(
 input logic clk,
 input logic rst,
-input logic [15:0] fifo_data,
+input logic [31:0] fifo_data,
 input logic fifo_valid,
-input logic [2:0] src_tile,
 input logic tx_ready,
 output logic [31:0] packet,
 output logic packet_valid,
 output logic fifo_rd_en
 );
-logic rw;
-logic [2:0] dest_tile;
-logic [11:0] address;
-always_comb
-begin
-    rw = fifo_data[15];
-    dest_tile = fifo_data[14:12];
-    address = fifo_data[11:0];
-end
 always_ff @(posedge clk or posedge rst)
 begin
     if(rst)
@@ -180,22 +197,13 @@ begin
         fifo_rd_en   <= 1'b0;
         if(fifo_valid && tx_ready)
         begin
-            packet <= {
-                        rw,
-                        src_tile,
-                        dest_tile,
-                        address,
-                        13'b0
-                      };
-
+            packet       <= fifo_data;
             packet_valid <= 1'b1;
-            fifo_rd_en <= 1'b1;
+            fifo_rd_en   <= 1'b1;
         end
     end
 end
 endmodule
-
-### TX CONTROLLER
 
 module tx_controller(
 input logic clk,
@@ -266,8 +274,6 @@ end
 assign tx_ready = (state == IDLE);
 endmodule
 
-### RX CONTROLLER
-
 module rx_controller(
     input logic clk,
     input logic rst,
@@ -295,152 +301,29 @@ begin
 end
 endmodule
 
-### PACKET DECODER
-
 module packet_decoder(
     input logic clk,
     input logic rst,
     input logic [31:0] packet,
     input logic packet_valid,
     output logic decode_valid,
-    output logic rw,
-    output logic [2:0] src_tile,
-    output logic [2:0] dest_tile,
-    output logic [11:0] address
+    output l2_nic_pkt_t pkt_out
 );
+import l2_cache_pkg::*;
 always_comb
 begin
-    rw = 1'b0;
-    src_tile = 3'b000;
-    dest_tile = 3'b000;
-    address = 12'd0;
     decode_valid = 1'b0;
+    pkt_out = '0;
     if(packet_valid)
     begin
-        rw = packet[31];
-        src_tile = packet[30:28];
-        dest_tile = packet[27:25];
-        address = packet[24:13];
+        pkt_out.dest_id         = {1'b0, packet[31:30]};
+        pkt_out.src_id          = {1'b0, packet[29:28]};
+        pkt_out.msg             = l2_nic_msg_t'(packet[27:24]);
+        pkt_out.we              = packet[23];
+        pkt_out.is_exclusive_in = packet[22];
+        pkt_out.addr            = packet[21:14];
+        pkt_out.data            = packet[13:6];
         decode_valid = 1'b1;
-    end
-end
-endmodule
-
-### TB
-
-module nic_top_tb;
-logic clk;
-logic rst;
-logic fifo_wr_en;
-logic [15:0] fifo_data_in;
-logic [2:0] src_tile;
-logic router_ready;
-logic router_valid_in;
-logic [31:0] router_data_in;
-logic router_valid_out;
-logic [31:0] router_data_out;
-logic decode_valid;
-logic rw;
-logic [2:0] src_out;
-logic [2:0] dest_out;
-logic [11:0] address_out;
-logic fifo_full;
-logic fifo_empty;
-nic_top dut
-(
-.clk(clk),
-.rst(rst),
-.fifo_wr_en(fifo_wr_en),
-.fifo_data_in(fifo_data_in),
-.src_tile(src_tile),
-.router_ready(router_ready),
-.router_valid_in(router_valid_in),
-.router_data_in(router_data_in),
-.router_valid_out(router_valid_out),
-.router_data_out(router_data_out),
-.decode_valid(decode_valid),
-.rw(rw),
-.src_out(src_out),
-.dest_out(dest_out),
-.address_out(address_out),
-.fifo_full(fifo_full),
-.fifo_empty(fifo_empty)
-);
-initial begin
-    clk = 0;
-    forever #5 clk = ~clk;
-end
-initial begin
-    rst = 1;
-    fifo_wr_en = 0;
-    fifo_data_in = 0;
-    src_tile = 3'b001;
-    router_ready = 1;
-    router_valid_in = 0;
-    router_data_in = 0;
-    #20;
-    rst = 0;
-end
-task write_fifo(input logic [15:0] data);
-begin
-    @(posedge clk);
-    fifo_wr_en <= 1'b1;
-    fifo_data_in <= data;
-    @(posedge clk);
-    fifo_wr_en <= 1'b0;
-end
-endtask
-initial begin
-    wait(rst == 0);
-    #10;
-    $display("Starting FIFO writes");
-    write_fifo(
-        {
-        1'b1,
-        3'b010,
-        12'h123
-        }
-    );
-    write_fifo(
-        {
-        1'b0,
-        3'b011,
-        12'h456
-        }
-    );
-    write_fifo(
-        {
-        1'b1,
-        3'b100,
-        12'h789
-        }
-    );
-  #300;
-    $finish;
-end
-always @(posedge clk)
-begin
-    if(router_valid_out)
-    begin
-        $display("Router received packet");
-        $display("TX DATA = %h",router_data_out);
-        router_valid_in <= 1'b1;
-        router_data_in <= router_data_out;
-    end
-    else
-    begin
-        router_valid_in <= 1'b0;
-    end
-end
-always @(posedge clk)
-begin
-    if(decode_valid)
-    begin
-        $display("DECODED PACKET ");
-        $display("RW = %b",rw);
-        $display("SOURCE TILE = %d",src_out);
-        $display("DEST TILE = %d",dest_out);
-        $display("ADDRESS = %h",address_out);
     end
 end
 endmodule
